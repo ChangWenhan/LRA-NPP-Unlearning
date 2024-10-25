@@ -171,7 +171,9 @@ def _pattern_backward(ctx, relevance_output):
     input, weight, P = ctx.saved_tensors
 
     if ctx.attribution: P = P * weight # PatternAttribution
-    relevance_input  = F.conv_transpose2d(relevance_output, P, padding=ctx.padding, stride=ctx.stride)
+    # For Resnet50, the output_padding is 1
+    relevance_input  = F.conv_transpose2d(relevance_output, P, padding=ctx.padding, output_padding=1, stride=ctx.stride)
+    # relevance_input  = F.conv_transpose2d(relevance_output, P, padding=ctx.padding, stride=ctx.stride)
 
     trace.do_trace(relevance_input) 
     return relevance_input, None, None, None, None, None, None, None
