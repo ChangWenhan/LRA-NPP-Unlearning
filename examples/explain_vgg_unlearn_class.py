@@ -201,7 +201,7 @@ def compute_and_plot_explanation_multiAnalysis(rule, ax_, patterns=None, plt_fn=
         index = []
         for i,t in enumerate(all_relevances):
             t = t[0].tolist()
-            index = sorted(range(len(t)), key=lambda i: t[i], reverse=True)[:200]
+            index = sorted(range(len(t)), key=lambda i: t[i], reverse=True)[:150]
             counter.append(index)
             break
         loop_time+=1
