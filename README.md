@@ -56,8 +56,7 @@ python examples/batch_experiments/run_batch.py --dataset cifar100
 
 Current unified runner support:
 
-- implemented: `mnist`, `cifar10`, `cifar100`
-- reserved for extension: `imagenet`, `mufac`
+- `mnist`, `cifar10`, `cifar100`, `imagenet`, `mufac`
 
 ## How to Configure Experiments
 
