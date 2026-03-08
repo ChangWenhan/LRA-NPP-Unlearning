@@ -30,23 +30,7 @@ conda activate torchlrp
 
 ## Quick Start
 
-Run from repository root:
-
-```bash
-cd /path/to/TorchLRP-master
-python examples/batch_experiments/lra-npp-sta-MNIST.py
-```
-
-For other datasets:
-
-```bash
-python examples/batch_experiments/lra-npp-sta-cifar10.py
-python examples/batch_experiments/lra-npp-sta-cifar100.py
-python examples/batch_experiments/lra-npp-sta-imagenet.py
-python examples/batch_experiments/lra-npp-sta-MUFAC.py
-```
-
-Unified entrypoint (recommended):
+Run from repository root using the unified entrypoint:
 
 ```bash
 python examples/batch_experiments/run_batch.py --dataset mnist
