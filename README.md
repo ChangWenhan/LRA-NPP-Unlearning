@@ -91,11 +91,27 @@ You can either:
 - run MIA integrated in batch scripts (`MIA`, `FS` fields), or
 - run standalone scripts in `examples/mia/`.
 
+Unified MIA entrypoint:
+
+```bash
+python examples/mia/run_mia.py --target all
+python examples/mia/run_mia.py --target mnist
+```
+
 Examples:
 
 ```bash
 python examples/mia/membership_inference_attack_MNIST.py
 python examples/mia/membership_inference_attack_CIFAR10.py
+```
+
+## Retraining
+
+Unified retraining entrypoint:
+
+```bash
+python examples/retraining/run_retraining.py --target all
+python examples/retraining/run_retraining.py --target cifar10
 ```
 
 ## Outputs
