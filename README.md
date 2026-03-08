@@ -98,13 +98,6 @@ python examples/mia/run_mia.py --target all
 python examples/mia/run_mia.py --target mnist
 ```
 
-Examples:
-
-```bash
-python examples/mia/membership_inference_attack_MNIST.py
-python examples/mia/membership_inference_attack_CIFAR10.py
-```
-
 ## Retraining
 
 Unified retraining entrypoint:
