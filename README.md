@@ -46,10 +46,32 @@ python examples/batch_experiments/lra-npp-sta-imagenet.py
 python examples/batch_experiments/lra-npp-sta-MUFAC.py
 ```
 
+Unified entrypoint (recommended):
+
+```bash
+python examples/batch_experiments/run_batch.py --dataset mnist
+python examples/batch_experiments/run_batch.py --dataset cifar10
+python examples/batch_experiments/run_batch.py --dataset cifar100
+```
+
+Current unified runner support:
+
+- implemented: `mnist`, `cifar10`, `cifar100`
+- reserved for extension: `imagenet`, `mufac`
+
 ## How to Configure Experiments
 
-Each batch script has an `EXPERIMENT_CONFIG` dictionary at the top.
-Typical fields to set:
+Default configs are in:
+
+- `examples/batch_experiments/core/config.py`
+
+You can override by JSON:
+
+```bash
+python examples/batch_experiments/run_batch.py --dataset mnist --override_json path/to/override.json
+```
+
+Typical fields:
 
 - target class: `unlearn_class`
 - model path: `model_path`
@@ -60,11 +82,15 @@ Typical fields to set:
   - `analyze_top_n_list`
   - `perturb_top_n_list`
   - `perturbation_methods` (`zero`, `gaussian`, `laplace`)
-- repeats and saving:
-  - `n_repeats`
-  - `save_model`, `model_save_dir`
-  - `save_neurons`, `neuron_save_dir`
-  - `save_excel`, `results_save_dir`
+- run controls:
+  - `n_runs`
+  - `seed_base`
+  - `seed_stride`
+- methods:
+  - `methods = ["retrain", "lra_npp", "noise_gn", "noise_ln"]`
+- saving:
+  - `save_models`
+  - `output_root`
 
 ## Baselines Used
 
@@ -88,6 +114,32 @@ Examples:
 python examples/mia/membership_inference_attack_MNIST.py
 python examples/mia/membership_inference_attack_CIFAR10.py
 ```
+
+## Outputs
+
+Each experiment writes to:
+
+- `examples/batch_experiments/outputs/{dataset}/{exp_name}/runs.csv`
+- `examples/batch_experiments/outputs/{dataset}/{exp_name}/summary.csv`
+- `examples/batch_experiments/outputs/{dataset}/{exp_name}/paired_stats.csv`
+
+Recorded run-level metrics:
+
+- `At`, `Ag`, `Fr`, `Fs`, `G` (GPU memory GB), `Time`
+
+Paired statistics are computed at run/seed level for:
+
+- `LRA-NPP vs Retrain`
+- `LRA-NPP vs Noise-GN`
+- `LRA-NPP vs Noise-LN`
+
+With:
+
+- paired t-test p-value
+- Wilcoxon p-value
+- Cliff's Delta (`Δ`)
+- Cohen's dz (`d`)
+- 95% CI of paired mean difference
 
 ## Notes
 
