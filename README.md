@@ -19,6 +19,7 @@ The project is built on top of a PyTorch LRP implementation and extends it with:
 - `examples/retraining/`: retrain-from-scratch baselines.
 - `examples/random_labels/`: unified random-label baselines.
 - `examples/paint/`: unified explanation plotting scripts.
+- `examples/explain/`: unified explanation-neuron extraction scripts.
 
 ## Environment
 
@@ -133,6 +134,15 @@ Unified plotting entrypoint:
 ```bash
 python examples/paint/run_paint.py --target all
 python examples/paint/run_paint.py --target cifar10
+```
+
+## Neuron Extraction (Explain)
+
+Unified explain entrypoint:
+
+```bash
+python examples/explain/run_explain.py --target all --n_runs 5
+python examples/explain/run_explain.py --target cifar10 --analyze_top_n 400
 ```
 
 ## Outputs
