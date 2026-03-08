@@ -8,6 +8,7 @@ examples/patterns/vgg*
 examples/models/
 examples/plots/
 examples/patterns/
+examples/batch_experiments/outputs/
 torch_imagenet/imagenet-mini/
 custom_korean_family_dataset_resolution_128.zip
 TDSC-2025-05-0739.R1_Proof_hi.pdf

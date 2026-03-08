@@ -17,6 +17,12 @@ def _forward_rho(rho, incr, ctx, input, weight, bias, stride, padding, dilation,
         Z = F.conv2d(input, weight, bias, stride, padding, dilation, groups)
         return Z
 
+def _safe_output_padding(stride):
+    if isinstance(stride, tuple):
+        return tuple(max(int(s) - 1, 0) for s in stride)
+    s = int(stride)
+    return max(s - 1, 0)
+
 def _backward_rho(ctx, relevance_output):
     input, weight, bias    = ctx.saved_tensors
 
@@ -24,8 +30,8 @@ def _backward_rho(ctx, relevance_output):
     Z                = ctx.incr(F.conv2d(input, weight, bias, ctx.stride, ctx.padding, ctx.dilation, ctx.groups))
 
     relevance_output = relevance_output / Z
-    # For Resnet50, the output_padding is 1
-    relevance_input  = F.conv_transpose2d(relevance_output, weight, None, stride=ctx.stride, padding=ctx.padding, output_padding=1,
+    # Use stride-aware output_padding; stride=1 requires output_padding=0.
+    relevance_input  = F.conv_transpose2d(relevance_output, weight, None, stride=ctx.stride, padding=ctx.padding, output_padding=_safe_output_padding(ctx.stride),
                                             dilation=ctx.dilation, groups=ctx.groups)
     # For VGG16, use this code instead
     # relevance_input  = F.conv_transpose2d(relevance_output, weight, None, padding=1)
@@ -171,8 +177,7 @@ def _pattern_backward(ctx, relevance_output):
     input, weight, P = ctx.saved_tensors
 
     if ctx.attribution: P = P * weight # PatternAttribution
-    # For Resnet50, the output_padding is 1
-    relevance_input  = F.conv_transpose2d(relevance_output, P, padding=ctx.padding, output_padding=1, stride=ctx.stride)
+    relevance_input  = F.conv_transpose2d(relevance_output, P, padding=ctx.padding, output_padding=_safe_output_padding(ctx.stride), stride=ctx.stride)
     # relevance_input  = F.conv_transpose2d(relevance_output, P, padding=ctx.padding, stride=ctx.stride)
 
     trace.do_trace(relevance_input) 
@@ -206,4 +211,3 @@ conv2d = {
         "patternattribution":   Conv2DPatternAttribution.apply,
         "patternnet":           Conv2DPatternNet.apply,
 }
-
