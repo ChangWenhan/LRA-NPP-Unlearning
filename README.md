@@ -42,6 +42,15 @@ Current unified runner support:
 
 - `mnist`, `cifar10`, `cifar100`, `imagenet`, `mufac`
 
+## Single Experiments
+
+Unified single-experiment entrypoint:
+
+```bash
+python examples/experiments/run_experiments.py --target all
+python examples/experiments/run_experiments.py --target mnist
+```
+
 ## How to Configure Experiments
 
 Default configs are in:
