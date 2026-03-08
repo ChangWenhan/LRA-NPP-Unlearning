@@ -17,7 +17,8 @@ The project is built on top of a PyTorch LRP implementation and extends it with:
 - `examples/batch_experiments/`: batch runners with repeated runs and statistics.
 - `examples/mia/`: standalone MIA evaluation scripts.
 - `examples/retraining/`: retrain-from-scratch baselines.
-- `examples/random_labels/`: random-label baselines.
+- `examples/random_labels/`: unified random-label baselines.
+- `examples/paint/`: unified explanation plotting scripts.
 
 ## Environment
 
@@ -114,6 +115,24 @@ Unified retraining entrypoint:
 ```bash
 python examples/retraining/run_retraining.py --target all
 python examples/retraining/run_retraining.py --target cifar10
+```
+
+## Random-Label Baselines
+
+Unified random-label entrypoint:
+
+```bash
+python examples/random_labels/run_random_labels.py --target all
+python examples/random_labels/run_random_labels.py --target mnist
+```
+
+## Explanation Plots
+
+Unified plotting entrypoint:
+
+```bash
+python examples/paint/run_paint.py --target all
+python examples/paint/run_paint.py --target cifar10
 ```
 
 ## Outputs
