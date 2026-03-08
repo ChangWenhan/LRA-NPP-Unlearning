@@ -1,44 +1,43 @@
 import argparse
-import subprocess
+import os
+import pathlib
 import sys
-from pathlib import Path
 
-from registry import MIA_SCRIPTS, list_targets
+# Runtime hardening for this workstation:
+# 1) ensure a writable temp directory exists;
+# 2) avoid importing user-site shadow packages from ~/.local.
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+TMP = pathlib.Path.home() / ".tmp_runtime"
+TMP.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("TMPDIR", TMP.as_posix())
+sys.path = [p for p in sys.path if "/.local/lib/python" not in p]
 
+import torch
 
-def run_one(target: str, python_bin: str, dry_run: bool = False):
-    script = MIA_SCRIPTS[target]
-    cmd = [python_bin, script.as_posix()]
-    print(f"[MIA] Running: {' '.join(cmd)}")
-    if dry_run:
-        return 0
-    ret = subprocess.run(cmd, cwd=Path(__file__).resolve().parents[2].as_posix())
-    return ret.returncode
+# Ensure project root import
+if ROOT.as_posix() not in sys.path:
+    sys.path.insert(0, ROOT.as_posix())
+
+from examples.mia.core import list_profiles, run_profile
 
 
 def main():
-    parser = argparse.ArgumentParser("Unified MIA runner")
-    parser.add_argument("--target", default="all", help=f"One of {list_targets()} or 'all'.")
-    parser.add_argument("--python", default=sys.executable)
-    parser.add_argument("--dry-run", action="store_true")
+    parser = argparse.ArgumentParser("Unified MIA project runner")
+    parser.add_argument("--target", default="all", help="Profile name or 'all'")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    targets = list_targets() if args.target == "all" else [args.target]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    base = ROOT.as_posix()
+
+    targets = list_profiles(base) if args.target == "all" else [args.target]
+    valid = set(list_profiles(base))
     for t in targets:
-        if t not in MIA_SCRIPTS:
-            raise ValueError(f"Unknown MIA target: {t}")
+        if t not in valid:
+            raise ValueError(f"Unknown target: {t}. Valid: {sorted(valid)}")
 
-    failed = []
     for t in targets:
-        code = run_one(t, args.python, args.dry_run)
-        if code != 0:
-            failed.append((t, code))
-
-    if failed:
-        msg = ", ".join([f"{t}(code={c})" for t, c in failed])
-        raise SystemExit(f"MIA run failed: {msg}")
-
-    print("[MIA] All requested targets finished successfully.")
+        run_profile(base, t, device=device, seed=args.seed)
 
 
 if __name__ == "__main__":

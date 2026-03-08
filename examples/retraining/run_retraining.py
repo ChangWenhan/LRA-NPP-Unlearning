@@ -1,44 +1,38 @@
 import argparse
-import subprocess
+import os
+import pathlib
 import sys
-from pathlib import Path
 
-from registry import RETRAIN_SCRIPTS, list_targets
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+TMP = pathlib.Path.home() / ".tmp_runtime"
+TMP.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("TMPDIR", TMP.as_posix())
+sys.path = [p for p in sys.path if "/.local/lib/python" not in p]
 
+import torch
 
-def run_one(target: str, python_bin: str, dry_run: bool = False):
-    script = RETRAIN_SCRIPTS[target]
-    cmd = [python_bin, script.as_posix()]
-    print(f"[Retrain] Running: {' '.join(cmd)}")
-    if dry_run:
-        return 0
-    ret = subprocess.run(cmd, cwd=Path(__file__).resolve().parents[2].as_posix())
-    return ret.returncode
+if ROOT.as_posix() not in sys.path:
+    sys.path.insert(0, ROOT.as_posix())
+
+from examples.retraining.core import list_profiles, run_profile
 
 
 def main():
-    parser = argparse.ArgumentParser("Unified retraining runner")
-    parser.add_argument("--target", default="all", help=f"One of {list_targets()} or 'all'.")
-    parser.add_argument("--python", default=sys.executable)
-    parser.add_argument("--dry-run", action="store_true")
+    parser = argparse.ArgumentParser("Unified retraining project runner")
+    parser.add_argument("--target", default="all", help="Profile name or 'all'")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    targets = list_targets() if args.target == "all" else [args.target]
+    base = ROOT.as_posix()
+    targets = list_profiles(base) if args.target == "all" else [args.target]
+    valid = set(list_profiles(base))
     for t in targets:
-        if t not in RETRAIN_SCRIPTS:
-            raise ValueError(f"Unknown retrain target: {t}")
+        if t not in valid:
+            raise ValueError(f"Unknown target: {t}. Valid: {sorted(valid)}")
 
-    failed = []
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     for t in targets:
-        code = run_one(t, args.python, args.dry_run)
-        if code != 0:
-            failed.append((t, code))
-
-    if failed:
-        msg = ", ".join([f"{t}(code={c})" for t, c in failed])
-        raise SystemExit(f"Retrain run failed: {msg}")
-
-    print("[Retrain] All requested targets finished successfully.")
+        run_profile(base, t, seed=args.seed, device=device)
 
 
 if __name__ == "__main__":
