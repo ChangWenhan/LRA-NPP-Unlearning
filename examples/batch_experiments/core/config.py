@@ -27,7 +27,7 @@ DATASET_CONFIGS = {
         "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
         "noise_std": 1.0,
         "noise_laplace_scale": 1.0,
-        "retrain": {"epochs": 3, "lr": 1e-3},
+        "retrain": {"epochs": 3, "lr": 1e-3, "from_scratch": True},
         "layer_map": {
             "analysis_layer": 0,
             "output_layer_idx": 8,
@@ -53,7 +53,7 @@ DATASET_CONFIGS = {
         "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
         "noise_std": 1.0,
         "noise_laplace_scale": 1.0,
-        "retrain": {"epochs": 3, "lr": 1e-4},
+        "retrain": {"epochs": 3, "lr": 1e-4, "from_scratch": True},
         "layer_map": {
             "analysis_layer": 0,
             "output_layer_idx": 22,
@@ -79,7 +79,7 @@ DATASET_CONFIGS = {
         "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
         "noise_std": 1.0,
         "noise_laplace_scale": 1.0,
-        "retrain": {"epochs": 3, "lr": 1e-4},
+        "retrain": {"epochs": 3, "lr": 1e-4, "from_scratch": True},
         "layer_map": {
             "analysis_layer": 0,
             "output_layer_idx": 22,
@@ -102,9 +102,10 @@ DATASET_CONFIGS = {
         "seed_stride": 100,
         "noise_std": 1.0,
         "noise_laplace_scale": 1.0,
-        "retrain": {"epochs": 1, "lr": 1e-4},
+        "retrain": {"epochs": 1, "lr": 1e-4, "from_scratch": True},
         "imagenet_unlearn_data_dir": _p("torch_imagenet", "imagenet-mini", "train", "n01734418"),
         "imagenet_full_data_dir": _p("torch_imagenet", "imagenet-mini", "train"),
+        "imagenet_test_data_dir": _p("torch_imagenet", "imagenet-mini", "train"),
         "vgg_version": 16,
         "use_pretrained": True,
         "layer_map": {
@@ -134,7 +135,7 @@ DATASET_CONFIGS = {
         "seed_stride": 100,
         "noise_std": 1.0,
         "noise_laplace_scale": 1.0,
-        "retrain": {"epochs": 1, "lr": 1e-4},
+        "retrain": {"epochs": 1, "lr": 1e-4, "from_scratch": True},
         "mufac_root": _p("data", "custom_korean_family_dataset_resolution_128"),
         "mufac_model_path": _p("examples", "models", "vit_best_on_test.pth"),
         "mufac_num_classes": 8,

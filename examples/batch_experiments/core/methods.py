@@ -1,5 +1,6 @@
 import copy
 import csv
+import os
 import pathlib
 import random
 import sys
@@ -118,8 +119,12 @@ def _perturb_resnet_fc(lrp_model, neuron_indices, method, config):
     output_idx = layer_map["output_layer_idx"]
     out_w = lrp_model[output_idx].weight.data.clone()
     neurons = neuron_indices[: config["perturb_top_n"]]
+    target_class = int(config["unlearn_class"])
+    class_indices = range(out_w.shape[0])
+    if layer_map.get("target_class_only", False):
+        class_indices = [target_class]
 
-    for c in range(out_w.shape[0]):
+    for c in class_indices:
         for n in neurons:
             if method == "lra_npp":
                 out_w[c, n] = 0.0
@@ -259,6 +264,15 @@ def _make_retrain_loader(full_train_dataset, batch_size, unlearn_class):
     return DataLoader(subset, batch_size=batch_size, shuffle=True)
 
 
+def _reinitialize_model_parameters(model):
+    for module in model.modules():
+        if len(list(module.children())) > 0:
+            continue
+        if hasattr(module, "reset_parameters"):
+            module.reset_parameters()
+    return model
+
+
 class _MUFACDataset(Dataset):
     MAP = {"a": 0, "b": 1, "c": 2, "d": 3, "e": 4, "f": 5, "g": 6, "h": 7}
 
@@ -290,6 +304,27 @@ class _MUFACDataset(Dataset):
         return img, label
 
 
+class _ImageDirAsSingleClassDataset(Dataset):
+    def __init__(self, root_dir, label, transform=None):
+        self.root_dir = pathlib.Path(root_dir)
+        self.label = int(label)
+        self.transform = transform
+        exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+        self.files = sorted([p for p in self.root_dir.iterdir() if p.is_file() and p.suffix.lower() in exts])
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        from PIL import Image
+
+        p = self.files[idx]
+        img = Image.open(p.as_posix()).convert("RGB")
+        if self.transform:
+            img = self.transform(img)
+        return img, self.label
+
+
 def _load_mufac_vit(config, device):
     from torchvision.models import vision_transformer
 
@@ -316,6 +351,8 @@ def run_method(method_name, base_model, data_ctx, config, device, seed):
 
     if method_name == "retrain":
         model = copy.deepcopy(base_model).to(device)
+        if config.get("retrain", {}).get("from_scratch", True):
+            model = _reinitialize_model_parameters(model)
         retrain_loader = _make_retrain_loader(data_ctx["train_dataset"], config["batch_size"], config["unlearn_class"])
         loss_fn = torch.nn.CrossEntropyLoss()
         optim = torch.optim.Adam(model.parameters(), lr=config["retrain"]["lr"])
@@ -413,7 +450,18 @@ def load_dataset_and_model(config, device):
         train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
 
-        model = torch.load(config["model_path"], map_location=device, weights_only=False).to(device)
+        checkpoint = torch.load(config["model_path"], map_location=device, weights_only=False)
+        if isinstance(checkpoint, torch.nn.Module):
+            model = checkpoint.to(device)
+        elif isinstance(checkpoint, dict):
+            model = torchvision.models.resnet50(weights=None)
+            model.fc = nn.Linear(model.fc.in_features, 10 if ds == "cifar10" else 100)
+            state = checkpoint.get("state_dict", checkpoint)
+            state = {k.replace("module.", ""): v for k, v in state.items()}
+            model.load_state_dict(state, strict=False)
+            model = model.to(device)
+        else:
+            raise TypeError(f"Unsupported CIFAR checkpoint type: {type(checkpoint)}")
         model.eval()
         return model, {
             "train_dataset": train_dataset,
@@ -430,13 +478,28 @@ def load_dataset_and_model(config, device):
             torchvision.transforms.ToTensor(),
             torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
-        from torch_imagenet import ImageNetDataset
-
-        unlearn_dataset = ImageNetDataset(root_dir=config["imagenet_unlearn_data_dir"], transform=transform)
         full_dataset = torchvision.datasets.ImageFolder(root=config["imagenet_full_data_dir"], transform=transform)
+        unlearn_dir = pathlib.Path(config["imagenet_unlearn_data_dir"])
+        synset_name = unlearn_dir.name
+        inferred_target = full_dataset.class_to_idx.get(synset_name)
+        if inferred_target is not None and int(config["unlearn_class"]) != int(inferred_target):
+            raise ValueError(
+                f"ImageNet unlearn_class mismatch: config={config['unlearn_class']} "
+                f"but class_to_idx['{synset_name}']={inferred_target}"
+            )
+        unlearn_dataset = _ImageDirAsSingleClassDataset(
+            root_dir=unlearn_dir.as_posix(),
+            label=int(config["unlearn_class"]) if inferred_target is None else int(inferred_target),
+            transform=transform,
+        )
 
         train_loader = DataLoader(full_dataset, batch_size=config["batch_size"], shuffle=True)
-        test_loader = DataLoader(full_dataset, batch_size=config["batch_size"], shuffle=False)
+        test_root = config.get("imagenet_test_data_dir")
+        if test_root and os.path.isdir(test_root):
+            test_dataset = torchvision.datasets.ImageFolder(root=test_root, transform=transform)
+        else:
+            test_dataset = full_dataset
+        test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
 
         weights = torchvision.models.VGG16_Weights.IMAGENET1K_V1 if config.get("use_pretrained", True) else None
         model = torchvision.models.vgg16(weights=weights).to(device)
@@ -444,7 +507,7 @@ def load_dataset_and_model(config, device):
 
         return model, {
             "train_dataset": full_dataset,
-            "test_dataset": full_dataset,
+            "test_dataset": test_dataset,
             "analysis_dataset": unlearn_dataset,
             "train_loader": train_loader,
             "test_loader": test_loader,
