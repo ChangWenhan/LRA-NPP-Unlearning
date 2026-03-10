@@ -16,7 +16,7 @@ DATASET_CONFIGS = {
         "model_path": _p("examples", "models", "mnist_model.pth"),
         "output_root": _p("examples", "batch_experiments", "outputs"),
         "batch_size": 64,
-        "analysis_sample_size": 100,
+        "analysis_sample_size": 36,
         "analyze_top_n": 50,
         "perturb_top_n": 80,
         "rules": ["epsilon"],
