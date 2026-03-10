@@ -12,6 +12,7 @@ import torch
 import torchvision
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, Subset
+from tqdm.auto import tqdm
 
 # Ensure repository root is importable when scripts are run from batch_experiments/.
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -20,6 +21,7 @@ if REPO_ROOT.as_posix() not in sys.path:
 
 import lrp
 from examples.utils import get_mnist_model
+from .metrics import evaluate_at_ag
 
 
 def set_seed(seed):
@@ -45,7 +47,7 @@ def _add_laplace_noise(tensor, scale):
     return tensor + lap.sample(tensor.shape)
 
 
-def _select_analysis_subset(dataset, target_class, sample_size, seed):
+def _select_analysis_subset(dataset, target_class, sample_size, seed=None):
     indices = []
     for i in range(len(dataset)):
         row = dataset[i]
@@ -56,8 +58,9 @@ def _select_analysis_subset(dataset, target_class, sample_size, seed):
     if len(indices) == 0:
         return Subset(dataset, [])
 
-    rng = torch.Generator().manual_seed(seed)
-    order = torch.randperm(len(indices), generator=rng).tolist()
+    # Match the legacy scripts: rely on PyTorch's default RNG state instead of
+    # a per-call generator seeded from the experiment seed.
+    order = torch.randperm(len(indices)).tolist()
     selected = [indices[i] for i in order[: min(sample_size, len(indices))]]
     return Subset(dataset, selected)
 
@@ -242,15 +245,29 @@ def _perturb_vit_head(model, neuron_indices, method, config):
     return model
 
 
-def _train_one_epoch(model, train_loader, optimizer, loss_fn, device):
+def _train_one_epoch(model, train_loader, optimizer, loss_fn, device, progress_desc=None):
     model.train()
-    for row in train_loader:
+    correct = 0
+    total = 0
+    iterator = tqdm(
+        train_loader,
+        total=len(train_loader),
+        desc=progress_desc or "Retrain Train",
+        leave=False,
+    )
+    for row in iterator:
         x, y = row[0].to(device), row[1].to(device)
         optimizer.zero_grad()
         out = model(x)
         loss = loss_fn(out, y)
         loss.backward()
         optimizer.step()
+        pred = out.argmax(dim=1)
+        correct += (pred == y).sum().item()
+        total += y.size(0)
+        if total > 0:
+            iterator.set_postfix(acc=f"{(correct / total):.4f}", loss=f"{float(loss.item()):.4f}")
+    return (correct / total) if total > 0 else 0.0
 
 
 def _make_retrain_loader(full_train_dataset, batch_size, unlearn_class):
@@ -271,6 +288,23 @@ def _reinitialize_model_parameters(model):
         if hasattr(module, "reset_parameters"):
             module.reset_parameters()
     return model
+
+
+def _build_cifar_retrain_model(ds, device):
+    num_classes = 10 if ds == "cifar10" else 100
+    weights = torchvision.models.ResNet50_Weights.IMAGENET1K_V1
+    model = torchvision.models.resnet50(weights=weights)
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
+    return model.to(device)
+
+
+def _build_mufac_retrain_model(config, device):
+    from torchvision.models import vision_transformer
+
+    weights = vision_transformer.ViT_B_16_Weights.IMAGENET1K_V1
+    model = vision_transformer.vit_b_16(weights=weights)
+    model.heads.head = nn.Linear(model.heads.head.in_features, int(config["mufac_num_classes"]))
+    return model.to(device)
 
 
 class _MUFACDataset(Dataset):
@@ -351,13 +385,68 @@ def run_method(method_name, base_model, data_ctx, config, device, seed):
 
     if method_name == "retrain":
         model = copy.deepcopy(base_model).to(device)
-        if config.get("retrain", {}).get("from_scratch", True):
-            model = _reinitialize_model_parameters(model)
+        retrain_cfg = config.get("retrain", {})
+        if retrain_cfg.get("from_scratch", True):
+            if ds in {"cifar10", "cifar100"}:
+                # Match legacy CIFAR retrain baseline:
+                # keep ImageNet-pretrained backbone, reset classifier head.
+                model = _build_cifar_retrain_model(ds, device)
+            elif ds == "mufac":
+                # Match legacy ViT retrain baseline:
+                # keep ImageNet-pretrained backbone, reset classifier head.
+                model = _build_mufac_retrain_model(config, device)
+            else:
+                model = _reinitialize_model_parameters(model)
         retrain_loader = _make_retrain_loader(data_ctx["train_dataset"], config["batch_size"], config["unlearn_class"])
         loss_fn = torch.nn.CrossEntropyLoss()
-        optim = torch.optim.Adam(model.parameters(), lr=config["retrain"]["lr"])
-        for _ in range(config["retrain"]["epochs"]):
-            _train_one_epoch(model, retrain_loader, optim, loss_fn, device)
+        opt_name = str(retrain_cfg.get("optimizer", "adam")).lower()
+        lr = float(retrain_cfg.get("lr", 1e-4))
+        if opt_name == "sgd":
+            momentum = float(retrain_cfg.get("momentum", 0.9))
+            weight_decay = float(retrain_cfg.get("weight_decay", 0.0))
+            optim = torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
+        elif opt_name == "adam":
+            weight_decay = float(retrain_cfg.get("weight_decay", 0.0))
+            optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        else:
+            raise ValueError(f"Unsupported retrain optimizer: {opt_name}")
+
+        scheduler = None
+        scheduler_cfg = retrain_cfg.get("scheduler")
+        if isinstance(scheduler_cfg, dict) and scheduler_cfg.get("type") == "step":
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optim,
+                step_size=int(scheduler_cfg.get("step_size", 30)),
+                gamma=float(scheduler_cfg.get("gamma", 0.1)),
+            )
+
+        max_epochs = int(retrain_cfg.get("epochs", 1))
+        ag_stop_target = retrain_cfg.get("ag_stop_target")
+        stop_train_acc = retrain_cfg.get("stop_train_acc")
+        for epoch_idx in range(max_epochs):
+            train_acc = _train_one_epoch(
+                model,
+                retrain_loader,
+                optim,
+                loss_fn,
+                device,
+                progress_desc=f"Retrain Train [{ds}] {epoch_idx + 1}/{max_epochs}",
+            )
+            if scheduler is not None:
+                scheduler.step()
+            if ag_stop_target is not None:
+                _, current_ag = evaluate_at_ag(
+                    model,
+                    data_ctx["train_loader"],
+                    device,
+                    config["unlearn_class"],
+                    show_progress=True,
+                    progress_desc=f"Retrain TrainEval [{ds}] {epoch_idx + 1}/{max_epochs}",
+                )
+                if current_ag >= float(ag_stop_target):
+                    break
+            if stop_train_acc is not None and train_acc >= float(stop_train_acc):
+                break
         runtime = time.time() - start
         model.eval()
         return model, runtime
@@ -438,10 +527,14 @@ def load_dataset_and_model(config, device):
         }
 
     if ds in {"cifar10", "cifar100"}:
+        if ds == "cifar10":
+            mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+        else:
+            mean, std = [0.5071, 0.4867, 0.4408], [0.2675, 0.2565, 0.2761]
         transform = torchvision.transforms.Compose([
             torchvision.transforms.Resize((224, 224)),
             torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            torchvision.transforms.Normalize(mean=mean, std=std),
         ])
         dcls = torchvision.datasets.CIFAR10 if ds == "cifar10" else torchvision.datasets.CIFAR100
         train_dataset = dcls(root="/home/cwh/Workspace/TorchLRP-master/data", train=True, download=True, transform=transform)
