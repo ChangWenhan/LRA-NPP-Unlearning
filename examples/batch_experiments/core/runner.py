@@ -117,8 +117,22 @@ def run_experiment(dataset_name, exp_name=None, override_json=None):
             else:
                 g_gb = 0.0
 
-            at, ag = evaluate_at_ag(m, data_ctx["test_loader"], device, config["unlearn_class"])
-            fr = compute_fr(model, m, data_ctx["train_loader"], device, config["unlearn_class"])
+            at, ag = evaluate_at_ag(
+                m,
+                data_ctx["train_loader"],
+                device,
+                config["unlearn_class"],
+                show_progress=True,
+                progress_desc=f"Eval At/Ag(train) [{method_label}] seed={seed}",
+            )
+            fr = compute_fr(
+                model,
+                m,
+                data_ctx["train_loader"],
+                data_ctx["test_loader"],
+                device,
+                config["unlearn_class"],
+            )
             fs = compute_fs(m, data_ctx["train_loader"], data_ctx["test_loader"], device, config["unlearn_class"])
 
             rec = {

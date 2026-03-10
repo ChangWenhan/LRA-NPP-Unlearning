@@ -24,7 +24,7 @@ def _collect_target_probs(model, loader, device, target_class, mode, max_samples
     return np.asarray(feats)
 
 
-def compute_fr(base_model, candidate_model, train_loader, device, target_class):
+def compute_fr(base_model, candidate_model, train_loader, test_loader, device, target_class):
     try:
         from sklearn import svm
         from sklearn.preprocessing import StandardScaler
@@ -32,8 +32,10 @@ def compute_fr(base_model, candidate_model, train_loader, device, target_class):
         print(f"[Warn] sklearn unavailable for Fr calculation: {e}")
         return 0.0
 
+    # Member positives come from train target-class samples.
     pos = _collect_target_probs(base_model, train_loader, device, target_class, "target", max_samples=1500)
-    neg = _collect_target_probs(base_model, train_loader, device, target_class, "remain", max_samples=max(1500, len(pos)))
+    # Unseen negatives come from test target-class samples.
+    neg = _collect_target_probs(base_model, test_loader, device, target_class, "target", max_samples=max(1500, len(pos)))
 
     if len(pos) == 0 or len(neg) == 0:
         return 0.0

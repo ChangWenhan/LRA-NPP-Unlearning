@@ -5,14 +5,21 @@ except Exception:
     stats = None
 
 
-def cliffs_delta_against_zero(diffs):
-    diffs = np.asarray(diffs)
-    gt = np.sum(diffs > 0)
-    lt = np.sum(diffs < 0)
-    n = len(diffs)
-    if n == 0:
+def cliffs_delta(lhs, rhs):
+    lhs = np.asarray(lhs, dtype=float).ravel()
+    rhs = np.asarray(rhs, dtype=float).ravel()
+    n_l = len(lhs)
+    n_r = len(rhs)
+    if n_l == 0 or n_r == 0:
         return 0.0
-    return float((gt - lt) / n)
+    # Standard Cliff's Delta:
+    # delta = (#{x>y} - #{x<y}) / (n_l * n_r), x in lhs, y in rhs
+    gt = 0
+    lt = 0
+    for x in lhs:
+        gt += np.sum(x > rhs)
+        lt += np.sum(x < rhs)
+    return float((gt - lt) / (n_l * n_r))
 
 
 def cohens_dz(diffs):
@@ -69,7 +76,7 @@ def paired_tests(lhs, rhs):
                     p_w = 1.0
 
     ci_low, ci_high = bootstrap_ci_mean(diffs)
-    delta = cliffs_delta_against_zero(diffs)
+    delta = cliffs_delta(lhs, rhs)
     dz = cohens_dz(diffs)
 
     return {
