@@ -24,7 +24,35 @@ def _collect_target_probs(model, loader, device, target_class, mode, max_samples
     return np.asarray(feats)
 
 
-def compute_fr(base_model, candidate_model, train_loader, test_loader, device, target_class):
+def _collect_nonmember_probs(base_model, test_loader, device, target_class, max_samples, supplement_other_classes=False):
+    neg = _collect_target_probs(base_model, test_loader, device, target_class, "target", max_samples=max_samples)
+    if len(neg) >= max_samples or not supplement_other_classes:
+        return neg
+
+    remain = _collect_target_probs(
+        base_model,
+        test_loader,
+        device,
+        target_class,
+        "remain",
+        max_samples=max_samples - len(neg),
+    )
+    if len(neg) == 0:
+        return remain
+    if len(remain) == 0:
+        return neg
+    return np.concatenate([neg, remain], axis=0)
+
+
+def compute_fr(
+    base_model,
+    candidate_model,
+    train_loader,
+    test_loader,
+    device,
+    target_class,
+    supplement_other_test_classes=False,
+):
     try:
         from sklearn import svm
         from sklearn.preprocessing import StandardScaler
@@ -34,8 +62,16 @@ def compute_fr(base_model, candidate_model, train_loader, test_loader, device, t
 
     # Member positives come from train target-class samples.
     pos = _collect_target_probs(base_model, train_loader, device, target_class, "target", max_samples=1500)
-    # Unseen negatives come from test target-class samples.
-    neg = _collect_target_probs(base_model, test_loader, device, target_class, "target", max_samples=max(1500, len(pos)))
+    # Unseen negatives come from test target-class samples and can be supplemented
+    # with other test classes for tiny target-class test sets.
+    neg = _collect_nonmember_probs(
+        base_model,
+        test_loader,
+        device,
+        target_class,
+        max_samples=max(1500, len(pos)),
+        supplement_other_classes=supplement_other_test_classes,
+    )
 
     if len(pos) == 0 or len(neg) == 0:
         return 0.0
@@ -61,7 +97,7 @@ def compute_fr(base_model, candidate_model, train_loader, test_loader, device, t
     return float(fr)
 
 
-def _compute_losses(model, loader, device, target_class):
+def _compute_losses(model, loader, device, target_class, mode="target"):
     loss_fn = nn.CrossEntropyLoss(reduction="none")
     losses = []
     model.eval()
@@ -69,7 +105,12 @@ def _compute_losses(model, loader, device, target_class):
         for x, y in loader:
             x = x.to(device)
             y = y.to(device)
-            mask = y == target_class
+            if mode == "target":
+                mask = y == target_class
+            elif mode == "remain":
+                mask = y != target_class
+            else:
+                raise ValueError(f"Unknown loss collection mode: {mode}")
             if mask.sum().item() == 0:
                 continue
             x = x[mask]
@@ -80,15 +121,22 @@ def _compute_losses(model, loader, device, target_class):
     return np.asarray(losses)
 
 
-def compute_fs(model, train_loader, test_loader, device, target_class):
+def compute_fs(model, train_loader, test_loader, device, target_class, supplement_other_test_classes=False):
     try:
         from sklearn import linear_model, model_selection
     except Exception as e:
         print(f"[Warn] sklearn unavailable for Fs calculation: {e}")
         return 0.0
 
-    member_losses = _compute_losses(model, train_loader, device, target_class)
-    nonmember_losses = _compute_losses(model, test_loader, device, target_class)
+    member_losses = _compute_losses(model, train_loader, device, target_class, mode="target")
+    nonmember_losses = _compute_losses(model, test_loader, device, target_class, mode="target")
+    if len(nonmember_losses) < 5 and supplement_other_test_classes:
+        nonmember_losses = np.concatenate(
+            [
+                nonmember_losses,
+                _compute_losses(model, test_loader, device, target_class, mode="remain"),
+            ]
+        )
 
     if len(member_losses) < 5 or len(nonmember_losses) < 5:
         return 0.0

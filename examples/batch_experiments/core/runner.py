@@ -119,7 +119,7 @@ def run_experiment(dataset_name, exp_name=None, override_json=None):
 
             at, ag = evaluate_at_ag(
                 m,
-                data_ctx["train_loader"],
+                data_ctx.get("train_eval_loader", data_ctx["train_loader"]),
                 device,
                 config["unlearn_class"],
                 show_progress=True,
@@ -132,8 +132,20 @@ def run_experiment(dataset_name, exp_name=None, override_json=None):
                 data_ctx["test_loader"],
                 device,
                 config["unlearn_class"],
+                supplement_other_test_classes=bool(
+                    config.get("mia_supplement_nonmember_with_other_test_classes", False)
+                ),
             )
-            fs = compute_fs(m, data_ctx["train_loader"], data_ctx["test_loader"], device, config["unlearn_class"])
+            fs = compute_fs(
+                m,
+                data_ctx["train_loader"],
+                data_ctx["test_loader"],
+                device,
+                config["unlearn_class"],
+                supplement_other_test_classes=bool(
+                    config.get("mia_supplement_nonmember_with_other_test_classes", False)
+                ),
+            )
 
             rec = {
                 "dataset": config["dataset"],

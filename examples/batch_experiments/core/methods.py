@@ -195,6 +195,78 @@ class _HeadRelevanceHook:
         self.gradients = grad_input[0].detach()
 
 
+_VIT_ZENNIT_PATCHED = False
+
+
+def _ensure_vit_zennit_support():
+    global _VIT_ZENNIT_PATCHED
+    try:
+        from torchvision.models import vision_transformer
+        from lxt.efficient import monkey_patch, monkey_patch_zennit
+    except ImportError as exc:
+        raise RuntimeError(
+            "MUFAC legacy ViT LRP dependencies (`lxt`, `zennit`) are unavailable."
+        ) from exc
+
+    if not _VIT_ZENNIT_PATCHED:
+        monkey_patch(vision_transformer, verbose=False)
+        monkey_patch_zennit(verbose=False)
+        _VIT_ZENNIT_PATCHED = True
+    return True
+
+
+def _build_mufac_transform(config):
+    return _build_mufac_eval_transform(config)
+
+
+def _build_mufac_eval_transform(config):
+    if config.get("legacy_lra_npp_alignment", False):
+        return torchvision.transforms.Compose([
+            torchvision.transforms.Resize((224, 224)),
+            torchvision.transforms.ToTensor(),
+        ])
+    return torchvision.transforms.Compose([
+        torchvision.transforms.Resize((224, 224)),
+        torchvision.transforms.ToTensor(),
+        torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+
+def _get_mufac_zennit_composite(config):
+    try:
+        from zennit.composites import EpsilonGammaBox, LayerMapComposite
+        import zennit.rules as z_rules
+    except ImportError as exc:
+        raise RuntimeError(
+            "MUFAC legacy ViT LRP dependencies (`lxt`, `zennit`) are unavailable."
+        ) from exc
+
+    rule_type = config.get("lrp_rule_type", config.get("rules", ["epsilon"])[0])
+    params = config.get("lrp_params", {})
+    if rule_type == "gamma":
+        gamma_val = float(params.get("gamma", 0.25))
+        return LayerMapComposite([
+            (torch.nn.Conv2d, z_rules.Gamma(gamma_val)),
+            (torch.nn.Linear, z_rules.Gamma(gamma_val)),
+        ])
+    if rule_type == "epsilon":
+        epsilon_val = float(params.get("epsilon", 1e-6))
+        return LayerMapComposite([
+            (torch.nn.Conv2d, z_rules.Epsilon(epsilon_val)),
+            (torch.nn.Linear, z_rules.Epsilon(epsilon_val)),
+        ])
+    if rule_type == "alpha_beta":
+        alpha = float(params.get("alpha", 2.0))
+        beta = float(params.get("beta", 1.0))
+        return LayerMapComposite([
+            (torch.nn.Conv2d, z_rules.AlphaBeta(alpha=alpha, beta=beta)),
+            (torch.nn.Linear, z_rules.AlphaBeta(alpha=alpha, beta=beta)),
+        ])
+    if rule_type == "epsilon_gamma_box":
+        return EpsilonGammaBox(low=-3.0, high=3.0)
+    raise ValueError(f"Unsupported MUFAC LRP rule: {rule_type}")
+
+
 def _analyze_top_neurons_vit(model, analysis_loader, top_k, input_noise, device):
     counter = []
 
@@ -218,6 +290,42 @@ def _analyze_top_neurons_vit(model, analysis_loader, top_k, input_noise, device)
             top_indices = np.argsort(rel)[-top_k:][::-1].tolist()
             counter.append(top_indices)
         finally:
+            hf.remove()
+            hb.remove()
+
+    merged = [idx for row in counter for idx in row]
+    counts = Counter(merged)
+    return [idx for idx, _ in counts.most_common()]
+
+
+def _analyze_top_neurons_vit_legacy_lrp(model, analysis_loader, top_k, input_noise, device, config):
+    _ensure_vit_zennit_support()
+    counter = []
+
+    for row in analysis_loader:
+        x = row[0].to(device)
+        x = _add_image_noise(x, input_noise)
+        if x.shape[0] > 1:
+            x = x[0:1]
+
+        hook = _HeadRelevanceHook()
+        hf = model.heads.head.register_forward_hook(hook.fwd)
+        hb = model.heads.head.register_full_backward_hook(hook.bwd)
+        comp = _get_mufac_zennit_composite(config)
+        comp.register(model)
+
+        try:
+            model.zero_grad(set_to_none=True)
+            y = model(x.requires_grad_())
+            pred = y.argmax(dim=1)
+            y[torch.arange(x.shape[0]), pred].sum().backward()
+            if hook.activations is None or hook.gradients is None:
+                continue
+            rel = (hook.activations * hook.gradients)[0].abs().detach().cpu().numpy()
+            top_indices = np.argsort(rel)[-top_k:][::-1].tolist()
+            counter.append(top_indices)
+        finally:
+            comp.remove()
             hf.remove()
             hb.remove()
 
@@ -307,10 +415,19 @@ def _build_mufac_retrain_model(config, device):
     return model.to(device)
 
 
+def _build_imagenet_retrain_model(config, num_classes, device):
+    vgg_version = int(config.get("vgg_version", 16))
+    weights = getattr(torchvision.models, f"VGG{vgg_version}_Weights").IMAGENET1K_V1
+    model = getattr(torchvision.models, f"vgg{vgg_version}")(weights=weights)
+    in_features = model.classifier[-1].in_features
+    model.classifier[-1] = nn.Linear(in_features, int(num_classes))
+    return model.to(device)
+
+
 class _MUFACDataset(Dataset):
     MAP = {"a": 0, "b": 1, "c": 2, "d": 3, "e": 4, "f": 5, "g": 6, "h": 7}
 
-    def __init__(self, csv_path, image_dir, transform=None):
+    def __init__(self, csv_path, image_dir, transform=None, filter_class=None, keep_only_class=None):
         self.rows = []
         self.image_dir = image_dir
         self.transform = transform
@@ -322,6 +439,10 @@ class _MUFACDataset(Dataset):
                 if age not in self.MAP:
                     continue
                 label = self.MAP[age]
+                if filter_class is not None and label == int(filter_class):
+                    continue
+                if keep_only_class is not None and label != int(keep_only_class):
+                    continue
                 self.rows.append((r["image_path"], label))
 
     def __len__(self):
@@ -391,6 +512,15 @@ def run_method(method_name, base_model, data_ctx, config, device, seed):
                 # Match legacy CIFAR retrain baseline:
                 # keep ImageNet-pretrained backbone, reset classifier head.
                 model = _build_cifar_retrain_model(ds, device)
+            elif ds == "imagenet":
+                # Match legacy ImageNet retrain baseline:
+                # keep pretrained VGG backbone and rebuild the classifier head
+                # to the dataset's original class count.
+                model = _build_imagenet_retrain_model(
+                    config,
+                    num_classes=len(data_ctx["train_dataset"].classes),
+                    device=device,
+                )
             elif ds == "mufac":
                 # Match legacy ViT retrain baseline:
                 # keep ImageNet-pretrained backbone, reset classifier head.
@@ -422,9 +552,9 @@ def run_method(method_name, base_model, data_ctx, config, device, seed):
 
         max_epochs = int(retrain_cfg.get("epochs", 1))
         ag_stop_target = retrain_cfg.get("ag_stop_target")
-        stop_train_acc = retrain_cfg.get("stop_train_acc")
+        ag_eval_loader = data_ctx.get("train_eval_loader", data_ctx["train_loader"])
         for epoch_idx in range(max_epochs):
-            train_acc = _train_one_epoch(
+            _train_one_epoch(
                 model,
                 retrain_loader,
                 optim,
@@ -435,18 +565,15 @@ def run_method(method_name, base_model, data_ctx, config, device, seed):
             if scheduler is not None:
                 scheduler.step()
             if ag_stop_target is not None:
-                _, current_ag = evaluate_at_ag(
+                _, ag = evaluate_at_ag(
                     model,
-                    data_ctx["train_loader"],
+                    ag_eval_loader,
                     device,
                     config["unlearn_class"],
-                    show_progress=True,
-                    progress_desc=f"Retrain TrainEval [{ds}] {epoch_idx + 1}/{max_epochs}",
+                    show_progress=False,
                 )
-                if current_ag >= float(ag_stop_target):
+                if ag >= float(ag_stop_target):
                     break
-            if stop_train_acc is not None and train_acc >= float(stop_train_acc):
-                break
         runtime = time.time() - start
         model.eval()
         return model, runtime
@@ -460,8 +587,13 @@ def run_method(method_name, base_model, data_ctx, config, device, seed):
             data_ctx["analysis_dataset"], config["unlearn_class"], config["analysis_sample_size"], seed
         )
         analysis_loader = DataLoader(analysis_subset, batch_size=1, shuffle=False)
-        sorted_neurons = _analyze_top_neurons_vit(
-            model, analysis_loader, config["analyze_top_n"], config["input_noise"], device
+        sorted_neurons = _analyze_top_neurons_vit_legacy_lrp(
+            model,
+            analysis_loader,
+            config["analyze_top_n"],
+            config["input_noise"],
+            device,
+            config,
         )
         model = _perturb_vit_head(model, sorted_neurons, method_name, config)
         runtime = time.time() - start
@@ -608,33 +740,44 @@ def load_dataset_and_model(config, device):
 
     if ds == "mufac":
         root = pathlib.Path(config["mufac_root"])
-        transform = torchvision.transforms.Compose([
-            torchvision.transforms.Resize((224, 224)),
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
+        transform = _build_mufac_transform(config)
+        eval_transform = _build_mufac_eval_transform(config)
 
         train_dataset = _MUFACDataset(
             csv_path=(root / "custom_train_dataset.csv").as_posix(),
             image_dir=(root / "train_images").as_posix(),
             transform=transform,
         )
+        train_eval_dataset = _MUFACDataset(
+            csv_path=(root / "custom_train_dataset.csv").as_posix(),
+            image_dir=(root / "train_images").as_posix(),
+            transform=eval_transform,
+        )
         test_dataset = _MUFACDataset(
-            csv_path=(root / "custom_val_dataset.csv").as_posix(),
-            image_dir=(root / "val_images").as_posix(),
-            transform=transform,
+            csv_path=(root / "custom_test_dataset.csv").as_posix(),
+            image_dir=(root / "test_images").as_posix(),
+            transform=eval_transform,
+        )
+        analysis_dataset = _MUFACDataset(
+            csv_path=(root / "custom_test_dataset.csv").as_posix(),
+            image_dir=(root / "test_images").as_posix(),
+            transform=eval_transform,
+            keep_only_class=config["unlearn_class"],
         )
 
         train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
+        train_eval_loader = DataLoader(train_eval_dataset, batch_size=config["batch_size"], shuffle=False)
         test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
 
         model = _load_mufac_vit(config, device)
 
         return model, {
             "train_dataset": train_dataset,
+            "train_eval_dataset": train_eval_dataset,
             "test_dataset": test_dataset,
-            "analysis_dataset": test_dataset,
+            "analysis_dataset": analysis_dataset,
             "train_loader": train_loader,
+            "train_eval_loader": train_eval_loader,
             "test_loader": test_loader,
         }
 

@@ -7,7 +7,6 @@ examples/patterns/vgg*
 # Project artifacts (keep repository code-focused)
 examples/models/
 examples/plots/
-examples/patterns/
 examples/batch_experiments/outputs/
 torch_imagenet/imagenet-mini/
 custom_korean_family_dataset_resolution_128.zip
