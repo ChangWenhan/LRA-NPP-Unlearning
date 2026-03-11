@@ -1,6 +1,8 @@
 import csv
 import json
+import multiprocessing as mp
 import os
+import traceback
 from datetime import datetime
 
 import numpy as np
@@ -87,6 +89,72 @@ def _collect_pair_stats(rows):
     return recs
 
 
+def _run_one_method(method_name, model, data_ctx, config, device, seed):
+    method_label = _method_label(method_name)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device=device)
+    m, runtime = run_method(method_name, model, data_ctx, config, device, seed)
+    if torch.cuda.is_available():
+        g_gb = torch.cuda.max_memory_allocated(device=device) / (1024 ** 3)
+    else:
+        g_gb = 0.0
+
+    at, ag = evaluate_at_ag(
+        m,
+        data_ctx.get("train_eval_loader", data_ctx["train_loader"]),
+        device,
+        config["unlearn_class"],
+        show_progress=True,
+        progress_desc=f"Eval At/Ag(train) [{method_label}] seed={seed}",
+    )
+    fr = compute_fr(
+        model,
+        m,
+        data_ctx["train_loader"],
+        data_ctx["test_loader"],
+        device,
+        config["unlearn_class"],
+        supplement_other_test_classes=bool(
+            config.get("mia_supplement_nonmember_with_other_test_classes", False)
+        ),
+    )
+    fs = compute_fs(
+        m,
+        data_ctx["train_loader"],
+        data_ctx["test_loader"],
+        device,
+        config["unlearn_class"],
+        supplement_other_test_classes=bool(
+            config.get("mia_supplement_nonmember_with_other_test_classes", False)
+        ),
+    )
+
+    rec = {
+        "dataset": config["dataset"],
+        "seed": int(seed),
+        "run_id": 0,
+        "method": method_label,
+        "At": float(at),
+        "Ag": float(ag),
+        "Fr": float(fr),
+        "Fs": float(fs),
+        "G": float(g_gb),
+        "Time": float(runtime),
+    }
+    return m, rec
+
+
+def _mufac_worker(config, method_name, seed, run_id, queue):
+    try:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        model, data_ctx = load_dataset_and_model(config, device)
+        _, rec = _run_one_method(method_name, model, data_ctx, config, device, seed)
+        rec["run_id"] = int(run_id)
+        queue.put({"ok": True, "record": rec})
+    except Exception:
+        queue.put({"ok": False, "error": traceback.format_exc()})
+
+
 def run_experiment(dataset_name, exp_name=None, override_json=None):
     config = get_config(dataset_name)
     if config.get("not_implemented", False):
@@ -102,72 +170,47 @@ def run_experiment(dataset_name, exp_name=None, override_json=None):
     out_dir = _build_output_dir(config, exp_name=exp_name)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model, data_ctx = load_dataset_and_model(config, device)
+    model = None
+    data_ctx = None
+    if config["dataset"] != "mufac":
+        model, data_ctx = load_dataset_and_model(config, device)
 
     run_records = []
     for i in range(config["n_runs"]):
         seed = config["seed_base"] + i * config["seed_stride"]
         for method_name in config["methods"]:
-            method_label = _method_label(method_name)
-            if torch.cuda.is_available():
-                torch.cuda.reset_peak_memory_stats(device=device)
-            m, runtime = run_method(method_name, model, data_ctx, config, device, seed)
-            if torch.cuda.is_available():
-                g_gb = torch.cuda.max_memory_allocated(device=device) / (1024 ** 3)
+            if config["dataset"] == "mufac":
+                ctx = mp.get_context("spawn")
+                queue = ctx.Queue()
+                proc = ctx.Process(target=_mufac_worker, args=(config, method_name, seed, i, queue))
+                proc.start()
+                proc.join()
+                if queue.empty():
+                    raise RuntimeError(
+                        f"MUFAC subprocess produced no result for method={method_name}, seed={seed}, "
+                        f"exitcode={proc.exitcode}"
+                    )
+                msg = queue.get()
+                queue.close()
+                if not msg.get("ok"):
+                    raise RuntimeError(
+                        f"MUFAC subprocess failed for method={method_name}, seed={seed}\n{msg.get('error', '')}"
+                    )
+                rec = msg["record"]
             else:
-                g_gb = 0.0
-
-            at, ag = evaluate_at_ag(
-                m,
-                data_ctx.get("train_eval_loader", data_ctx["train_loader"]),
-                device,
-                config["unlearn_class"],
-                show_progress=True,
-                progress_desc=f"Eval At/Ag(train) [{method_label}] seed={seed}",
-            )
-            fr = compute_fr(
-                model,
-                m,
-                data_ctx["train_loader"],
-                data_ctx["test_loader"],
-                device,
-                config["unlearn_class"],
-                supplement_other_test_classes=bool(
-                    config.get("mia_supplement_nonmember_with_other_test_classes", False)
-                ),
-            )
-            fs = compute_fs(
-                m,
-                data_ctx["train_loader"],
-                data_ctx["test_loader"],
-                device,
-                config["unlearn_class"],
-                supplement_other_test_classes=bool(
-                    config.get("mia_supplement_nonmember_with_other_test_classes", False)
-                ),
-            )
-
-            rec = {
-                "dataset": config["dataset"],
-                "seed": int(seed),
-                "run_id": int(i),
-                "method": method_label,
-                "At": float(at),
-                "Ag": float(ag),
-                "Fr": float(fr),
-                "Fs": float(fs),
-                "G": float(g_gb),
-                "Time": float(runtime),
-            }
+                m, rec = _run_one_method(method_name, model, data_ctx, config, device, seed)
+                rec["run_id"] = int(i)
             run_records.append(rec)
 
             if config.get("save_models", False):
-                save_path = os.path.join(out_dir, "models", f"{method_label}_seed{seed}.pth")
-                torch.save(m, save_path)
+                if config["dataset"] != "mufac":
+                    save_path = os.path.join(out_dir, "models", f"{rec['method']}_seed{seed}.pth")
+                    torch.save(m, save_path)
 
             print(
-                f"[{config['dataset']}] seed={seed} method={method_label} "
-                f"At={at:.4f} Ag={ag:.4f} Fr={fr:.4f} Fs={fs:.4f} G={g_gb:.3f}GB Time={runtime:.2f}s"
+                f"[{config['dataset']}] seed={seed} method={rec['method']} "
+                f"At={rec['At']:.4f} Ag={rec['Ag']:.4f} Fr={rec['Fr']:.4f} Fs={rec['Fs']:.4f} "
+                f"G={rec['G']:.3f}GB Time={rec['Time']:.2f}s"
             )
 
     runs_path = os.path.join(out_dir, "runs.csv")

@@ -24,7 +24,7 @@ DATASET_CONFIGS = {
         "n_runs": 5,
         "seed_base": 42,
         "seed_stride": 100,
-        "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
+        "methods": ["retrain", "lra_npp"],
         "noise_std": 1.0,
         "noise_laplace_scale": 1.0,
         "retrain": {
@@ -56,7 +56,7 @@ DATASET_CONFIGS = {
         "n_runs": 5,
         "seed_base": 42,
         "seed_stride": 100,
-        "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
+        "methods": ["retrain", "lra_npp"],
         "noise_std": 1.0,
         "noise_laplace_scale": 1.0,
         "retrain": {
@@ -89,7 +89,7 @@ DATASET_CONFIGS = {
         "n_runs": 5,
         "seed_base": 42,
         "seed_stride": 100,
-        "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
+        "methods": ["retrain", "lra_npp"],
         "noise_std": 1.0,
         "noise_laplace_scale": 1.0,
         "retrain": {
@@ -147,7 +147,7 @@ DATASET_CONFIGS = {
             "perturb_output": False,
         },
         "output_root": _p("examples", "batch_experiments", "outputs"),
-        "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
+        "methods": ["retrain", "lra_npp"],
         "save_models": False,
     },
     "mufac": {
@@ -183,7 +183,7 @@ DATASET_CONFIGS = {
         "mufac_model_path": _p("examples", "models", "vit_best_on_test.pth"),
         "mufac_num_classes": 8,
         "output_root": _p("examples", "batch_experiments", "outputs"),
-        "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
+        "methods": ["retrain", "lra_npp"],
         "save_models": False,
     },
 }
