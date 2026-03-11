@@ -147,8 +147,7 @@ DATASET_CONFIGS = {
             "perturb_output": False,
         },
         "output_root": _p("examples", "batch_experiments", "outputs"),
-        # "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
-        "methods": ["retrain"],
+        "methods": ["retrain", "lra_npp", "noise_gn", "noise_ln"],
         "save_models": False,
     },
     "mufac": {
